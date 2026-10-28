@@ -8,12 +8,11 @@ services:
       - "7497:8080"
     restart: unless-stopped
     env_file: .env
+    # trustylynx-net: Auth-Service (Login-Token prüfen). Keine eigene DB, deshalb kein DB-Netz.
     networks:
       - default
 
 networks:
   default:
     name: trustylynx-net
-    external: true
-  auth-db-net:
     external: true
