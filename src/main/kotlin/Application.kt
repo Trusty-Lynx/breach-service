@@ -13,6 +13,7 @@ import de.trustylynx.common.configureStatusPages
 import de.trustylynx.common.createServiceHttpClient
 import de.trustylynx.common.healthRoute
 import de.trustylynx.domain.BreachService
+import de.trustylynx.jobs.CheckJobQueue
 import de.trustylynx.security.LoginTokenVerifier
 import io.ktor.server.application.Application
 import io.ktor.server.application.ApplicationStopped
@@ -32,16 +33,16 @@ fun Application.module() {
         httpClient.close()
     }
 
-    val breaches = BreachService(HttpLeakCheckClient(httpClient, config.leakCheckUrl))
+    val jobs = CheckJobQueue(BreachService(HttpLeakCheckClient(httpClient, config.leakCheckUrl)))
     val loginTokens = LoginTokenVerifier(HttpAuthServiceClient(httpClient, config.authServiceUrl, config.serviceTokenGateway))
     val vault = HttpVaultServiceClient(httpClient, config.vaultServiceUrl, config.serviceTokenBreach)
 
-    configureApp(breaches, loginTokens, vault, config.cors)
+    configureApp(jobs, loginTokens, vault, config.cors)
 }
 
 /** Plugins und Routen, getrennt von [module], damit Tests Fakes einsetzen können. */
 fun Application.configureApp(
-    breaches: BreachService,
+    jobs: CheckJobQueue,
     loginTokens: LoginTokenVerifier,
     vault: VaultServiceClient,
     cors: CorsConfig = CorsConfig(),
@@ -53,8 +54,10 @@ fun Application.configureApp(
     configureCors(cors)
     configureSerialization()
     configureStatusPages()
+    // Worker der Queue läuft in der Application-Coroutine und wird beim Stoppen mit abgebrochen.
+    jobs.start(this)
     routing {
         healthRoute(isHealthy)
-        breachRoutes(breaches, loginTokens, vault)
+        breachRoutes(jobs, loginTokens, vault)
     }
 }

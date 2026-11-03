@@ -1,53 +1,35 @@
 package de.trustylynx.domain
 
 import de.trustylynx.clients.LeakCheckClient
-import de.trustylynx.common.TooManyRequests
-import kotlinx.coroutines.delay
-import kotlinx.coroutines.sync.Mutex
-import kotlinx.coroutines.sync.withLock
 import java.security.MessageDigest
 import java.util.concurrent.ConcurrentHashMap
 
 /**
- * Leak-Check für Konten über LeakCheck.
+ * Leak-Check für Konten über LeakCheck, mit Cache davor.
  *
- * LeakCheck erlaubt 1 Anfrage pro Sekunde, und zwar pro IP, also für alle Nutzer zusammen.
- * Deshalb vergibt der Service Zeitfenster: Wer höchstens [maxWaitMillis] warten müsste, wartet.
- * Wer länger warten müsste, bekommt sofort [TooManyRequests] und der Client versucht es nach `Retry-After` erneut.
+ * Wird nur noch vom Worker der [de.trustylynx.jobs.CheckJobQueue] aufgerufen, nie direkt aus einer Route.
+ * Das Rate-Limit von LeakCheck (1 Anfrage pro Sekunde pro IP) hält deshalb die Queue ein, nicht diese Klasse.
  */
 class BreachService(
     private val leakCheck: LeakCheckClient,
-    // Etwas mehr als 1 s Abstand, damit wir nicht durch Ungenauigkeit über das Limit rutschen.
-    private val minIntervalMillis: Long = 1_100,
-    private val maxWaitMillis: Long = 3_000,
     // So lange cached auch Cloudflare vor LeakCheck (Cache-Control: max-age=43200).
     private val cacheTtlMillis: Long = 12 * 60 * 60 * 1000L,
     private val now: () -> Long = System::currentTimeMillis,
 ) {
     private val cache = ConcurrentHashMap<String, CachedResult>()
-    private val slotLock = Mutex()
-    private var nextFreeSlot = 0L
 
-    suspend fun checkAccount(query: AccountQuery): AccountBreaches {
-        val key = cacheKey(query)
-        cache[key]?.takeIf { it.expiresAt > now() }?.let { return it.result }
+    /** Ergebnis aus dem Cache oder null. Fragt LeakCheck nie. */
+    fun cached(query: AccountQuery): AccountBreaches? =
+        cache[cacheKey(query)]?.takeIf { it.expiresAt > now() }?.result
 
-        awaitSlot()
+    /**
+     * Fragt LeakCheck und merkt sich das Ergebnis.
+     * Wirft UpstreamException (nicht erreichbar, kaputte Antwort) oder TooManyRequests (LeakCheck-Rate-Limit).
+     */
+    suspend fun lookup(query: AccountQuery): AccountBreaches {
         val result = leakCheck.lookup(query.value)
-        remember(key, result)
+        remember(cacheKey(query), result)
         return result
-    }
-
-    private suspend fun awaitSlot() {
-        val wait = slotLock.withLock {
-            val t = now()
-            val slot = maxOf(t, nextFreeSlot)
-            val wait = slot - t
-            if (wait > maxWaitMillis) throw TooManyRequests(retryAfterSeconds = (wait + 999) / 1000)
-            nextFreeSlot = slot + minIntervalMillis
-            wait
-        }
-        if (wait > 0) delay(wait)
     }
 
     private fun remember(key: String, result: AccountBreaches) {
