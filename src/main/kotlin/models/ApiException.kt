@@ -1,10 +1,9 @@
-package de.trustylynx.common
+package de.trustylynx.models
 
 import io.ktor.http.HttpStatusCode
 import kotlinx.serialization.Serializable
 
-/** Fachlicher Fehler, den StatusPages in eine Response mit [ErrorResponse] übersetzt (meist 4xx). */
-sealed class ApiException(
+open class ApiException(
     val status: HttpStatusCode,
     val code: String,
     val reason: String? = null,
@@ -14,17 +13,15 @@ class BadRequest(reason: String) : ApiException(HttpStatusCode.BadRequest, "bad_
 
 class Unauthorized : ApiException(HttpStatusCode.Unauthorized, "unauthorized")
 
-/** Tresor-Token fehlt, passt nicht oder ist abgelaufen. Wie im vault-service, der Client fragt dann das Masterpasswort ab. */
+// same code as the vault-service, the client then asks for the master password again
 class VaultLocked : ApiException(HttpStatusCode.Unauthorized, "vault_locked")
-
-class Forbidden : ApiException(HttpStatusCode.Forbidden, "forbidden")
 
 class NotFound : ApiException(HttpStatusCode.NotFound, "not_found")
 
 class TooManyRequests(val retryAfterSeconds: Long) :
     ApiException(HttpStatusCode.TooManyRequests, "too_many_requests")
 
-/** Ein anderer Service hat nicht oder unbrauchbar geantwortet. Wird zu 502. */
+// another service didn't answer or sent garbage, becomes 502
 class UpstreamException(message: String, cause: Throwable? = null) : RuntimeException(message, cause)
 
 @Serializable

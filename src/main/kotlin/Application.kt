@@ -1,20 +1,20 @@
 package de.trustylynx
 
-import de.trustylynx.api.breachRoutes
 import de.trustylynx.clients.HttpAuthServiceClient
 import de.trustylynx.clients.HttpLeakCheckClient
 import de.trustylynx.clients.HttpVaultServiceClient
 import de.trustylynx.clients.VaultServiceClient
-import de.trustylynx.common.CorsConfig
-import de.trustylynx.common.configureCors
-import de.trustylynx.common.configureRequestLogging
-import de.trustylynx.common.configureSerialization
-import de.trustylynx.common.configureStatusPages
-import de.trustylynx.common.createServiceHttpClient
-import de.trustylynx.common.healthRoute
-import de.trustylynx.domain.BreachService
-import de.trustylynx.jobs.CheckJobQueue
+import de.trustylynx.clients.createServiceHttpClient
+import de.trustylynx.plugins.CorsConfig
+import de.trustylynx.plugins.configureCors
+import de.trustylynx.plugins.configureRequestLogging
+import de.trustylynx.plugins.configureSerialization
+import de.trustylynx.plugins.configureStatusPages
+import de.trustylynx.routes.breachRoutes
+import de.trustylynx.routes.healthRoute
 import de.trustylynx.security.LoginTokenVerifier
+import de.trustylynx.services.BreachService
+import de.trustylynx.services.CheckJobQueue
 import io.ktor.server.application.Application
 import io.ktor.server.application.ApplicationStopped
 import io.ktor.server.netty.EngineMain
@@ -24,7 +24,6 @@ fun main(args: Array<String>) {
     EngineMain.main(args)
 }
 
-/** Einziger Ort, an dem Abhängigkeiten gebaut und verdrahtet werden. */
 fun Application.module() {
     val config = AppConfig.fromEnv()
 
@@ -40,24 +39,22 @@ fun Application.module() {
     configureApp(jobs, loginTokens, vault, config.cors)
 }
 
-/** Plugins und Routen, getrennt von [module], damit Tests Fakes einsetzen können. */
 fun Application.configureApp(
     jobs: CheckJobQueue,
     loginTokens: LoginTokenVerifier,
     vault: VaultServiceClient,
     cors: CorsConfig = CorsConfig(),
-    // Keine eigene DB: Läuft der Prozess, ist der Service gesund.
-    isHealthy: suspend () -> Boolean = { true },
 ) {
     configureRequestLogging()
-    // Vor allem anderen, damit auch Fehlerantworten (401, 502 …) die CORS-Header tragen, sonst sieht der Browser nur "CORS error".
+    // before everything else, so error answers (401, 502 ...) carry the CORS headers too,
+    // otherwise the browser only shows "CORS error"
     configureCors(cors)
     configureSerialization()
     configureStatusPages()
-    // Worker der Queue läuft in der Application-Coroutine und wird beim Stoppen mit abgebrochen.
+    // the worker runs in the Application coroutine and gets cancelled when it stops
     jobs.start(this)
     routing {
-        healthRoute(isHealthy)
+        healthRoute()
         breachRoutes(jobs, loginTokens, vault)
     }
 }

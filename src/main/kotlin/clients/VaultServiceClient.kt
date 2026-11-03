@@ -1,10 +1,7 @@
 package de.trustylynx.clients
 
-import de.trustylynx.common.Caller
-import de.trustylynx.common.SERVICE_TOKEN_HEADER
-import de.trustylynx.common.UpstreamException
-import de.trustylynx.common.callUpstream
-import de.trustylynx.common.serviceUrl
+import de.trustylynx.models.Caller
+import de.trustylynx.models.UpstreamException
 import io.ktor.client.HttpClient
 import io.ktor.client.request.header
 import io.ktor.client.request.post
@@ -14,22 +11,20 @@ import io.ktor.http.HttpStatusCode
 import io.ktor.http.contentType
 import kotlinx.serialization.Serializable
 
-/** Zugriff auf den Vault-Service. Als Interface, damit Tests einen Fake einsetzen können. */
+private const val WHAT = "vault-service vault/unlocked"
+
 interface VaultServiceClient {
-    /**
-     * Ist der Tresor von [caller] mit diesem Tresor-Token entsperrt? Über `POST /internal/vault/unlocked`.
-     * Gesperrt, abgelaufen oder fremd → false. Vault nicht erreichbar oder unerwartete Antwort → UpstreamException.
-     */
+    // false if the vault is locked, expired or belongs to someone else
     suspend fun isUnlocked(caller: Caller, vaultToken: String): Boolean
 }
 
+// serviceToken is SERVICE_TOKEN_BREACH
 class HttpVaultServiceClient(
     private val http: HttpClient,
     private val baseUrl: String,
     private val serviceToken: String,
 ) : VaultServiceClient {
 
-    // POST /internal/vault/unlocked, siehe vault-service/README.md. [serviceToken] = SERVICE_TOKEN_BREACH.
     override suspend fun isUnlocked(caller: Caller, vaultToken: String): Boolean {
         val response = callUpstream(WHAT) {
             http.post(serviceUrl(baseUrl, "internal", "vault", "unlocked")) {
@@ -40,14 +35,10 @@ class HttpVaultServiceClient(
         }
         return when (response.status) {
             HttpStatusCode.NoContent -> true
-            // 401 vault_locked ist kein Ausfall, sondern "Tresor gesperrt".
+            // 401 vault_locked isn't an outage, it means "vault locked"
             HttpStatusCode.Unauthorized -> false
             else -> throw UpstreamException("$WHAT answered ${response.status.value}")
         }
-    }
-
-    private companion object {
-        const val WHAT = "vault-service vault/unlocked"
     }
 }
 
@@ -58,6 +49,6 @@ private data class VerifyUnlockedRequest(
     val deviceId: String,
     val vaultToken: String,
 ) {
-    // Ohne Tresor-Token, damit er nie im Log landet.
+    // without the vault token, so it never ends up in a log
     override fun toString() = "VerifyUnlockedRequest(userId=$userId)"
 }

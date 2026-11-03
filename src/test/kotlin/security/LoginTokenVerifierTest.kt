@@ -1,13 +1,12 @@
-package de.trustylynx
+package de.trustylynx.security
 
 import de.trustylynx.clients.AuthServiceClient
 import de.trustylynx.clients.VerifiedSession
-import de.trustylynx.common.DEVICE_ID_HEADER
-import de.trustylynx.common.NO_DEVICE_ID
-import de.trustylynx.common.UpstreamException
-import de.trustylynx.common.configureSerialization
-import de.trustylynx.common.configureStatusPages
-import de.trustylynx.security.LoginTokenVerifier
+import de.trustylynx.models.NO_DEVICE_ID
+import de.trustylynx.models.UpstreamException
+import de.trustylynx.plugins.configureSerialization
+import de.trustylynx.plugins.configureStatusPages
+import de.trustylynx.routes.DEVICE_ID_HEADER
 import io.ktor.client.request.HttpRequestBuilder
 import io.ktor.client.request.get
 import io.ktor.client.request.header
@@ -26,7 +25,7 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNull
 
-/** Den Verifier allein testen, mit einer Test-Route, die nur den geprüften Caller zurückgibt. */
+// tests the verifier alone, with a test route that only returns the verified caller
 class LoginTokenVerifierTest {
 
     private val auth = FakeAuthService()
@@ -45,7 +44,7 @@ class LoginTokenVerifierTest {
         val response = getMe {
             bearer(LOGIN_TOKEN)
             header(DEVICE_ID_HEADER, "dev-mac-01")
-            // Die alten Platzhalter-Header von vor #8 dürfen nichts mehr bewirken.
+            // the old placeholder headers from before #8 must not have any effect
             header("X-User-Id", "fremder-nutzer")
             header("X-Session-Id", "fremde-session")
         }
@@ -99,8 +98,6 @@ class LoginTokenVerifierTest {
 
         assertEquals(HttpStatusCode.BadGateway, getMe { bearer(LOGIN_TOKEN) }.status)
     }
-
-    // ---------- Hilfen ----------
 
     private fun verifierTest(block: suspend ApplicationTestBuilder.() -> Unit) = testApplication {
         environment { config = MapApplicationConfig() }

@@ -1,17 +1,17 @@
 package de.trustylynx
 
 import de.trustylynx.clients.VerifiedSession
-import de.trustylynx.common.DEVICE_ID_HEADER
-import de.trustylynx.common.NO_DEVICE_ID
-import de.trustylynx.common.TooManyRequests
-import de.trustylynx.common.UpstreamException
-import de.trustylynx.common.VAULT_TOKEN_HEADER
-import de.trustylynx.domain.AccountBreaches
-import de.trustylynx.domain.BreachService
-import de.trustylynx.domain.BreachSource
-import de.trustylynx.jobs.CheckJobQueue
-import de.trustylynx.jobs.QueueSettings
+import de.trustylynx.models.AccountBreaches
+import de.trustylynx.models.BreachSource
+import de.trustylynx.models.NO_DEVICE_ID
+import de.trustylynx.models.TooManyRequests
+import de.trustylynx.models.UpstreamException
+import de.trustylynx.routes.DEVICE_ID_HEADER
+import de.trustylynx.routes.VAULT_TOKEN_HEADER
 import de.trustylynx.security.LoginTokenVerifier
+import de.trustylynx.services.BreachService
+import de.trustylynx.services.CheckJobQueue
+import de.trustylynx.services.QueueSettings
 import io.ktor.client.request.HttpRequestBuilder
 import io.ktor.client.request.get
 import io.ktor.client.request.header
@@ -39,7 +39,7 @@ import kotlin.test.assertNull
 import kotlin.test.assertTrue
 import kotlin.test.fail
 
-// POST /breach/account und GET /breach/account/jobs/{jobId}, documentation/api/breach-service/check-account.md
+// POST /breach/account and GET /breach/account/jobs/{jobId}, see documentation/api/breach-service/check-account.md
 class BreachRoutesTest {
 
     private val auth = FakeAuthService()
@@ -47,15 +47,13 @@ class BreachRoutesTest {
     private var leakCheck = FakeLeakCheck()
     private var breaches = BreachService(leakCheck)
 
-    // Kleine Zeiten, damit Retries im Test nur Millisekunden dauern.
+    // small times, so retries only take milliseconds
     private var queueSettings = QueueSettings(
         minIntervalMillis = 0,
         retryBaseMillis = 10,
         retryMaxMillis = 20,
         giveUpAfterMillis = 10_000,
     )
-
-    // ---------- Fälle aus der Doku ----------
 
     @Test
     fun `E-Mail-Hash mit Treffern liefert Quellen und Datenarten`() {
@@ -75,7 +73,7 @@ class BreachRoutesTest {
             val sources = json.getValue("sources").jsonArray.map { it.jsonObject }
             assertEquals("2015-11", sources[0].getValue("date").jsonPrimitive.content)
             assertNull(sources[1]["date"])
-            // Hash wird in Kleinbuchstaben weitergereicht
+            // the hash is passed on in lower case
             assertEquals(listOf(HASH), leakCheck.lookups)
         }
     }
@@ -94,8 +92,6 @@ class BreachRoutesTest {
 
         assertEquals(listOf("johndoe"), leakCheck.lookups)
     }
-
-    // ---------- Login-Token ----------
 
     @Test
     fun `ohne Login-Token gibt es 401 und LeakCheck wird nicht gefragt`() = breachTest {
@@ -150,8 +146,6 @@ class BreachRoutesTest {
         assertEquals(HttpStatusCode.BadGateway, postAccount(body("username", "johndoe")).status)
         assertTrue(leakCheck.lookups.isEmpty())
     }
-
-    // ---------- Tresor-Token ----------
 
     @Test
     fun `ohne Tresor-Token gibt es 401 vault_locked und der Vault wird nicht gefragt`() = breachTest {
@@ -208,8 +202,6 @@ class BreachRoutesTest {
         assertTrue(leakCheck.lookups.isEmpty())
     }
 
-    // ---------- Validierung ----------
-
     @Test
     fun `ungueltige Eingaben ergeben 400 und erreichen LeakCheck nie`() = breachTest {
         val bad = listOf(
@@ -228,8 +220,6 @@ class BreachRoutesTest {
         }
         assertTrue(leakCheck.lookups.isEmpty())
     }
-
-    // ---------- Queue ----------
 
     @Test
     fun `POST antwortet sofort mit 202, jobId und Location`() = breachTest {
@@ -283,7 +273,7 @@ class BreachRoutesTest {
             AccountBreaches(1, listOf("password"), listOf(BreachSource("Twitter.com", "2015-11")))
         }
         breaches = BreachService(leakCheck)
-        // Langsamer Retry, damit wir den Wartezustand sicher sehen
+        // slow retry, so we're sure to see the waiting state
         queueSettings = queueSettings.copy(retryBaseMillis = 300, retryMaxMillis = 300)
         breachTest {
             val response = postAccount(body("username", "johndoe"))
@@ -349,13 +339,13 @@ class BreachRoutesTest {
 
     @Test
     fun `volle Queue ergibt 429 mit Retry-After`() {
-        // Worker hängt am ersten Job, die Queue fasst nur einen weiteren.
+        // the worker is stuck on the first job, the queue only holds one more
         breaches = BreachService(FakeLeakCheck { throw UpstreamException("leakcheck down") })
         queueSettings = queueSettings.copy(
             capacity = 1,
             retryBaseMillis = 60_000,
             retryMaxMillis = 60_000,
-            // Sonst gibt der Worker sofort auf, weil der nächste Versuch nach der Frist läge.
+            // otherwise the worker gives up right away, because the next attempt would be past the deadline
             giveUpAfterMillis = 120_000,
         )
         breachTest {
@@ -399,8 +389,6 @@ class BreachRoutesTest {
         assertEquals("vault_locked", locked.errorCode())
     }
 
-    // ---------- Health ----------
-
     @Test
     fun `health braucht keinen Token`() = breachTest {
         val response = client.get("/health")
@@ -409,10 +397,8 @@ class BreachRoutesTest {
         assertEquals("ok", response.json().getValue("status").jsonPrimitive.content)
     }
 
-    // ---------- Hilfen ----------
-
     private fun breachTest(block: suspend ApplicationTestBuilder.() -> Unit) = testApplication {
-        // Leere Config, damit nicht application.yaml geladen wird und module() mit echten Clients startet.
+        // empty config, so application.yaml isn't loaded and module() doesn't start with the real clients
         environment { config = MapApplicationConfig() }
         application { configureApp(CheckJobQueue(breaches, queueSettings), LoginTokenVerifier(auth), vault) }
         block()
@@ -428,7 +414,7 @@ class BreachRoutesTest {
         callerHeaders()
     }
 
-    /** Fragt den Job ab, bis [until] zutrifft (Default: fertig). Wie das Polling im Client. */
+    // polls the job until `until` is true (default: finished), like the client does
     private suspend fun ApplicationTestBuilder.awaitJob(
         created: HttpResponse,
         until: (String) -> Boolean = { it == "done" || it == "failed" },
@@ -439,13 +425,12 @@ class BreachRoutesTest {
         while (System.currentTimeMillis() < deadline) {
             val job = getJob(jobId).json()
             if (until(job.status())) return job
-            // Echte Wartezeit: Der Worker läuft mit echten Delays, nicht mit virtueller Testzeit.
+            // real waiting, the worker runs with real delays and not with virtual test time
             Thread.sleep(10)
         }
         fail("job $jobId did not reach the expected status")
     }
 
-    /** Anlegen, warten bis done, Ergebnis zurück. */
     private suspend fun ApplicationTestBuilder.checkAccount(body: String): JsonObject {
         val job = awaitJob(postAccount(body))
         assertEquals("done", job.status())
@@ -462,14 +447,13 @@ class BreachRoutesTest {
 
     private suspend fun HttpResponse.json(): JsonObject = Json.parseToJsonElement(bodyAsText()).jsonObject
 
-    /** Fehlercode aus {"error": "..."} */
     private suspend fun HttpResponse.errorCode(): String = json().getValue("error").jsonPrimitive.content
 
     private companion object {
         const val PATH = "/breach/account"
         const val JOBS_PATH = "/breach/account/jobs"
 
-        // SHA-256("test@example.com"), erste 24 Hex-Zeichen
+        // SHA-256("test@example.com"), first 24 hex characters
         const val HASH = "973dfe463ec85785f5f95af5"
 
         fun body(type: String, value: String) = """{"type":"$type","value":"$value"}"""
