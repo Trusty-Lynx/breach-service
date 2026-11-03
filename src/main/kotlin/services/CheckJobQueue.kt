@@ -1,10 +1,13 @@
-package de.trustylynx.jobs
+package de.trustylynx.services
 
-import de.trustylynx.common.TooManyRequests
-import de.trustylynx.common.UpstreamException
-import de.trustylynx.domain.AccountBreaches
-import de.trustylynx.domain.AccountQuery
-import de.trustylynx.domain.BreachService
+import de.trustylynx.models.AccountBreaches
+import de.trustylynx.models.AccountQuery
+import de.trustylynx.models.CheckJob
+import de.trustylynx.models.CheckJobResponse
+import de.trustylynx.models.JobStatus
+import de.trustylynx.models.TooManyRequests
+import de.trustylynx.models.UpstreamException
+import de.trustylynx.models.toResponse
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineName
 import kotlinx.coroutines.CoroutineScope
@@ -16,46 +19,35 @@ import org.slf4j.LoggerFactory
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 
-/**
- * Asynchrone Leak-Checks: Die Route legt nur einen Job an ([submit]) und antwortet sofort mit 202.
- * EIN Worker arbeitet die Queue der Reihe nach ab und fragt LeakCheck.
- *
- * Warum genau ein Worker? LeakCheck erlaubt 1 Anfrage pro Sekunde pro IP, also für alle Nutzer zusammen.
- * Mit einem Worker reicht ein einfacher Abstand zwischen zwei Aufrufen, ohne Locks und Zeitfenster.
- *
- * LeakCheck nicht erreichbar (UpstreamException) oder 429 (TooManyRequests): Der Job bleibt vorne in der Queue,
- * der Worker wartet mit wachsendem Abstand (Backoff) und versucht es erneut. Weil LeakCheck dann für ALLE Jobs weg ist,
- * warten die anderen Jobs einfach mit, statt LeakCheck zusätzlich zu bombardieren. Erst nach
- * [QueueSettings.giveUpAfterMillis] gibt der Worker einen Job auf (FAILED).
- *
- * Alles liegt im RAM: Nach einem Neustart sind offene Jobs weg, der Client muss sie neu anlegen.
- * Wer das ändern will, ersetzt [jobs] und [queue] durch etwas Dauerhaftes (z. B. Redis), die Routen bleiben gleich.
- */
+private val log = LoggerFactory.getLogger(CheckJobQueue::class.java)
+
+private const val QUEUE_FULL_RETRY_AFTER_SECONDS = 30L
+
+// Exactly one worker, because LeakCheck allows 1 request per second per IP, for all users together.
+// With one worker a simple gap between two calls is enough, no locks or time windows.
+// If LeakCheck is down or answers 429, the job stays at the front and the other jobs just wait with it
+// instead of hammering LeakCheck even more. Everything lives in memory, open jobs are gone after a restart.
 class CheckJobQueue(
     private val breaches: BreachService,
     private val settings: QueueSettings = QueueSettings(),
-    private val now: () -> Long = System::currentTimeMillis,
-    private val newId: () -> String = { UUID.randomUUID().toString() },
 ) {
-    /** Alle Jobs (offen und fertig) nach ID. Fertige werden nach [QueueSettings.keepFinishedMillis] gelöscht. */
+    // all jobs (open and finished) by id, finished ones get removed after keepFinishedMillis
     private val jobs = ConcurrentHashMap<String, CheckJob>()
 
-    /** Reihenfolge der offenen Jobs, nur IDs. Begrenzt, damit bei langem LeakCheck-Ausfall der RAM nicht vollläuft. */
+    // order of the open jobs, bounded so a long LeakCheck outage can't fill up the memory
     private val queue = Channel<String>(settings.capacity)
 
-    /** Nur der Worker liest und schreibt das, deshalb ohne Lock. */
+    // only the worker reads and writes this, so no lock
     private var lastCallAt: Long? = null
 
-    /**
-     * Legt einen Job an. Steht das Ergebnis schon im Cache, ist der Job sofort DONE und kommt gar nicht in die Queue.
-     * Queue voll → [TooManyRequests].
-     */
-    fun submit(ownerId: String, query: AccountQuery): CheckJob {
+    // a cached result makes the job DONE right away, it never enters the queue
+    fun submit(ownerId: String, query: AccountQuery): CheckJobResponse {
         val t = now()
-        breaches.cached(query)?.let { result ->
-            val job = CheckJob(newId(), ownerId, null, JobStatus.DONE, t, result = result, finishedAt = t)
+        val cached = breaches.cached(query)
+        if (cached != null) {
+            val job = CheckJob(newId(), ownerId, null, JobStatus.DONE, t, result = cached, finishedAt = t)
             jobs[job.id] = job
-            return job
+            return job.toResponse()
         }
 
         val job = CheckJob(newId(), ownerId, query, JobStatus.QUEUED, t)
@@ -64,16 +56,17 @@ class CheckJobQueue(
             jobs.remove(job.id)
             throw TooManyRequests(retryAfterSeconds = QUEUE_FULL_RETRY_AFTER_SECONDS)
         }
-        return job
+        return job.toResponse()
     }
 
-    /** Job von [ownerId], oder null. Fremde Jobs sind wie nicht vorhanden, damit man keine IDs erraten kann. */
-    fun get(ownerId: String, id: String): CheckJob? = jobs[id]?.takeIf { it.ownerId == ownerId }
+    // other users' jobs look like missing ones, so nobody can guess ids
+    fun get(ownerId: String, id: String): CheckJobResponse? {
+        val job = jobs[id] ?: return null
+        if (job.ownerId != ownerId) return null
+        return job.toResponse()
+    }
 
-    /**
-     * Startet Worker und Aufräumer in [scope]. In der App ist das die Application:
-     * Beim Stoppen werden beide Coroutines automatisch abgebrochen.
-     */
+    // in the app the scope is the Application, so both coroutines get cancelled when it stops
     fun start(scope: CoroutineScope) {
         scope.launch(CoroutineName("breach-check-worker")) { work() }
         scope.launch(CoroutineName("breach-job-cleanup")) {
@@ -92,21 +85,21 @@ class CheckJobQueue(
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
-                // Nur der Typ, nicht die Exception: Message oder cause könnten den Benutzernamen enthalten.
-                // Der Worker darf hier nicht sterben, sonst bleiben alle folgenden Jobs für immer QUEUED.
+                // only the type, message or cause could contain the username.
+                // The worker must not die here, otherwise every following job stays QUEUED forever.
                 log.error("Check job {} failed unexpectedly: {}", job.id, e::class.simpleName)
                 finish(job.id, JobStatus.FAILED)
             }
         }
     }
 
-    /** Fragt LeakCheck für [job], bis es klappt oder der Job aufgegeben wird. */
     private suspend fun process(job: CheckJob) {
         val query = job.query ?: return
         while (true) {
-            // Ein Job weiter vorne in der Queue hat vielleicht dasselbe schon geholt.
-            breaches.cached(query)?.let {
-                finish(job.id, JobStatus.DONE, it)
+            // a job further up in the queue might have fetched the same thing already
+            val cached = breaches.cached(query)
+            if (cached != null) {
+                finish(job.id, JobStatus.DONE, cached)
                 return
             }
 
@@ -122,7 +115,7 @@ class CheckJobQueue(
                 log.warn("LeakCheck rate limit hit (job {}, attempt {})", job.id, attempt)
                 maxOf(e.retryAfterSeconds * 1000, settings.retryBaseMillis)
             } catch (e: UpstreamException) {
-                // Die Message enthält keinen Benutzernamen, siehe HttpLeakCheckClient.send().
+                // the message has no username in it, see HttpLeakCheckClient.send()
                 log.warn("LeakCheck unavailable (job {}, attempt {}): {}", job.id, attempt, e.message)
                 backoff(attempt)
             }
@@ -137,16 +130,17 @@ class CheckJobQueue(
         }
     }
 
-    /** Mindestabstand zwischen zwei LeakCheck-Aufrufen, auch über Jobs hinweg. */
+    // minimum gap between two LeakCheck calls, also across jobs
     private suspend fun awaitRateLimit() {
-        lastCallAt?.let { last ->
+        val last = lastCallAt
+        if (last != null) {
             val wait = last + settings.minIntervalMillis - now()
             if (wait > 0) delay(wait)
         }
         lastCallAt = now()
     }
 
-    /** 5 s, 10 s, 20 s, 40 s … höchstens [QueueSettings.retryMaxMillis]. */
+    // 5 s, 10 s, 20 s, 40 s and so on, up to retryMaxMillis
     private fun backoff(attempt: Int): Long {
         val factor = 1L shl (attempt - 1).coerceIn(0, 20)
         return (settings.retryBaseMillis * factor).coerceAtMost(settings.retryMaxMillis)
@@ -163,27 +157,29 @@ class CheckJobQueue(
 
     private fun removeExpired() {
         val t = now()
-        jobs.values.removeIf { job -> job.finishedAt?.let { t - it >= settings.keepFinishedMillis } == true }
+        jobs.values.removeIf { job ->
+            val finishedAt = job.finishedAt
+            finishedAt != null && t - finishedAt >= settings.keepFinishedMillis
+        }
     }
 
-    private companion object {
-        val log = LoggerFactory.getLogger(CheckJobQueue::class.java)
-        const val QUEUE_FULL_RETRY_AFTER_SECONDS = 30L
-    }
+    private fun now(): Long = System.currentTimeMillis()
+
+    private fun newId(): String = UUID.randomUUID().toString()
 }
 
-/** Stellschrauben der Queue. Defaults für Prod, Tests setzen kleine Werte. */
+// production defaults, the tests use small values
 data class QueueSettings(
-    /** Höchstens so viele Jobs warten gleichzeitig. Danach gibt es 429. */
+    // at most this many jobs wait at the same time, after that it's 429
     val capacity: Int = 1_000,
-    // Etwas mehr als 1 s Abstand, damit wir nicht durch Ungenauigkeit über das Limit von LeakCheck rutschen.
+    // a bit more than 1 s, so timing inaccuracy can't push us over LeakCheck's limit
     val minIntervalMillis: Long = 1_100,
-    /** Erste Wartezeit nach einem Fehlschlag, verdoppelt sich mit jedem weiteren Versuch. */
+    // first wait after a failure, doubles with every further attempt
     val retryBaseMillis: Long = 5_000,
     val retryMaxMillis: Long = 5 * 60_000L,
-    /** So lange (ab Anlegen) versucht es der Worker, dann FAILED. */
+    // counted from creation, after that the job becomes FAILED
     val giveUpAfterMillis: Long = 60 * 60_000L,
-    /** So lange kann der Client ein fertiges Ergebnis noch abholen. */
+    // how long the client can still fetch a finished result
     val keepFinishedMillis: Long = 60 * 60_000L,
     val cleanupIntervalMillis: Long = 60_000,
 )

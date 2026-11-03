@@ -1,33 +1,70 @@
 # breach-service
 
-This project was created using the [Ktor Project Generator](https://start.ktor.io).
+Prüft, ob ein Konto in bekannten Datenlecks vorkommt (über die Public API von LeakCheck), und liefert nur Quellen und Datenarten, nie die geleakten Daten selbst. Er speichert nichts dauerhaft und kennt weder Passwörter noch E-Mails im Klartext: E-Mails kommen nur als gekürzter SHA-256-Hash an.
 
-Here are some useful links to get you started:
+Kotlin 2.4 · Ktor 3.6 · Java 21
 
-* [Ktor Documentation](https://ktor.io/docs/home.html)
-* [Ktor GitHub page](https://github.com/ktorio/ktor)
-* [Ktor Slack chat](https://app.slack.com/client/T09229ZC6/C0A974TJ9). [Request an invite](https://surveys.jetbrains.com/s3/kotlin-slack-sign-up).
+## Endpoints
 
-## Features
+| Methode | Pfad | Zweck | Wer darf das aufrufen? |
+|---|---|---|---|
+| `GET` | `/health` | Läuft der Service? | alle, ohne Token |
+| `POST` | `/breach/account` | Leak-Check für `email_hash` oder `username` anlegen, antwortet sofort mit `202`, `jobId` und `Location` | angemeldete Nutzer mit entsperrtem Tresor (`Authorization: Bearer`, `X-Vault-Token`, optional `X-Device-Id`) |
+| `GET` | `/breach/account/jobs/{jobId}` | Status und Ergebnis eines Leak-Checks abfragen (Polling) | nur der Nutzer, der den Job angelegt hat, mit entsperrtem Tresor |
 
-Here's a list of features included in this project:
+Details zu Requests und Antworten: `documentation/api/breach-service/check-account.md`.
 
-| Name | Description |
-|------|-------------|
+Ablauf: Der Login-Token wird bei jeder Anfrage beim auth-service geprüft (`POST /internal/sessions/verify`), danach der Tresor-Token beim vault-service (`POST /internal/vault/unlocked`). Erst dann landet die Abfrage in einer Queue. Genau ein Worker fragt LeakCheck, damit das Limit von einer Anfrage pro Sekunde für alle Nutzer zusammen eingehalten wird. Ist LeakCheck nicht erreichbar, wartet der Job mit Backoff und gibt nach einer Stunde auf. Ergebnisse werden 12 Stunden im RAM gecacht, Benutzernamen dabei nur als Hash.
 
-## Building & Running
+## Struktur
 
-To build or run the project, use one of the following tasks:
-
-| Task              | Description       |
-|-------------------|-------------------|
-| `./gradlew test`  | Run the tests     |
-| `./gradlew build` | Build the project |
-| `./gradlew run`   | Run the server    |
-
-If the server starts successfully, you'll see the following output:
-
+```text
+src/main/kotlin/
+├── Application.kt     Start: liest die Konfiguration, baut alle Teile, verbindet sie
+├── AppConfig.kt       alle Umgebungsvariablen an einer Stelle
+├── routes/            HTTP: Request lesen, Eingaben prüfen, Service aufrufen, antworten
+├── services/          BreachService (Cache vor LeakCheck), CheckJobQueue (Queue und Worker)
+├── clients/           auth-service, vault-service, LeakCheck
+├── models/            Requests/Responses, Jobs, Fehler
+├── security/          LoginTokenVerifier
+└── plugins/           JSON, Fehlerantworten, CORS, Logging
+src/main/resources/
+├── application.yaml
+└── logback.xml
+src/test/kotlin/       Endpoint-Tests und Fakes, clients/ und security/ wie in main
 ```
-2024-12-04 14:32:45.584 [main] INFO  Application - Application started in 0.303 seconds.
-2024-12-04 14:32:45.682 [main] INFO  Application - Responding at http://0.0.0.0:8080
+
+Die Clients sind Interfaces, damit die Tests Fakes einsetzen können. `configureApp(...)` ist von `module()` getrennt, damit die Tests die App mit diesen Fakes starten.
+
+## Lokal starten
+
+```bash
+# auth-service und vault-service müssen laufen
+AUTH_SERVICE_URL=http://localhost:7491 VAULT_SERVICE_URL=http://localhost:7493 ./gradlew run -Pdevelopment
 ```
+
+Mit `-Pdevelopment` gelten die Dev-Defaults für `SERVICE_TOKEN_GATEWAY` und `SERVICE_TOKEN_BREACH`, die zu den Dev-Defaults von auth- und vault-service passen. Der Service läuft dann auf Port 8080. Alle Variablen stehen in `.env.example`.
+
+Fat-Jar bauen: `./gradlew buildFatJar`, danach liegt es unter `build/libs/breach-service-all.jar`.
+
+## Tests
+
+```bash
+./gradlew test
+```
+
+Die Tests brauchen weder Docker noch einen anderen Service. Auth-Service, Vault-Service und LeakCheck werden durch Fakes oder die Ktor-`MockEngine` ersetzt, deshalb wird nichts übersprungen.
+
+## Deploy
+
+Ein Push auf den Branch `deploy` startet `.github/workflows/deploy.yml`. Die Action kopiert das Repo per `rsync` nach `/opt/trustylynx/breach-service/` und führt dort `docker compose build` und `docker compose up -d` aus. Der Container hängt im Netz `trustylynx-net` und ist auf Port 7497 erreichbar. Die `.env` liegt nur auf dem Server, als Vorlage dient `.env.example`.
+
+## Offen
+
+- `GET /breach/range/{prefix}` (HIBP, US-23) fehlt noch.
+- Jobs und Cache liegen nur im RAM. Nach einem Neustart sind offene Jobs weg, und der Client muss sie neu anlegen.
+- `X-Device-Id` ist vorübergehend optional (Platzhalter `no-device`), bis alle Clients sie mitschicken.
+- Ist `CORS_ALLOWED_ORIGINS` nicht gesetzt, darf vorübergehend jede Origin aufrufen. Außerdem erlaubt CORS noch die alten Header `X-User-Id`, `X-Session-Id`, `X-Timestamp` und `X-Device-Sig`, weil `dashboard.js` sie noch mitschickt.
+- Ein 429 von LeakCheck wird immer mit 1 Sekunde angesetzt, ein mitgeschicktes `Retry-After` wird nicht gelesen. Wegen der Mindestwartezeit von 5 Sekunden fällt das bisher nicht auf.
+- Liefert LeakCheck eine unerwartete Fehlermeldung (zum Beispiel „Enter at least 3 characters“), wird das wie ein Ausfall behandelt und eine Stunde lang wiederholt. Die Validierung verhindert die bekannten Fälle.
+- Struktur: `security/LoginTokenVerifier` benutzt `clients/AuthServiceClient` und `DEVICE_ID_HEADER` aus `routes/`. Das weicht von der Tabelle in SERVICE-STRUKTUR.md ab und bleibt vorerst so, weil es sich nur mit einer Logikänderung auflösen ließe.

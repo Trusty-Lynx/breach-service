@@ -1,11 +1,9 @@
-package de.trustylynx
+package de.trustylynx.clients
 
-import de.trustylynx.clients.HttpLeakCheckClient
-import de.trustylynx.common.ServiceJson
-import de.trustylynx.common.TooManyRequests
-import de.trustylynx.common.UpstreamException
-import de.trustylynx.domain.AccountBreaches
-import de.trustylynx.domain.BreachSource
+import de.trustylynx.models.AccountBreaches
+import de.trustylynx.models.BreachSource
+import de.trustylynx.models.TooManyRequests
+import de.trustylynx.models.UpstreamException
 import io.ktor.client.HttpClient
 import io.ktor.client.engine.mock.MockEngine
 import io.ktor.client.engine.mock.MockRequestHandler
@@ -22,7 +20,7 @@ import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
 
-// Antworten wie von https://leakcheck.io/api/public (am 2026-10-28 live abgefragt)
+// answers as returned by https://leakcheck.io/api/public (checked live on 2026-10-28)
 class HttpLeakCheckClientTest {
 
     @Test
@@ -78,7 +76,7 @@ class HttpLeakCheckClientTest {
     }
 
     private fun clientRespondingWith(handler: MockRequestHandler): HttpLeakCheckClient {
-        // Gleiche Einstellungen wie createServiceHttpClient, nur mit MockEngine statt CIO.
+        // same settings as createServiceHttpClient, just with MockEngine instead of CIO
         val http = HttpClient(MockEngine(handler)) {
             expectSuccess = false
             install(ContentNegotiation) { json(ServiceJson) }

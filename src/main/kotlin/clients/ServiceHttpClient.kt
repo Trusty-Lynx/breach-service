@@ -1,5 +1,6 @@
-package de.trustylynx.common
+package de.trustylynx.clients
 
+import de.trustylynx.models.UpstreamException
 import io.ktor.client.HttpClient
 import io.ktor.client.call.body
 import io.ktor.client.engine.cio.CIO
@@ -14,33 +15,36 @@ import io.ktor.http.appendPathSegments
 import io.ktor.http.isSuccess
 import io.ktor.serialization.kotlinx.json.json
 import kotlinx.coroutines.CancellationException
+import kotlinx.serialization.json.Json
 import java.io.IOException
 import java.nio.channels.UnresolvedAddressException
 
-/** Header, an dem andere Services den Aufrufer erkennen. */
 const val SERVICE_TOKEN_HEADER = "X-Service-Token"
 
-/** HTTP-Client für Aufrufe an andere Services. Muss beim Stoppen der Anwendung geschlossen werden. */
+// tolerant towards new fields in the answers of other services
+val ServiceJson = Json {
+    ignoreUnknownKeys = true
+    explicitNulls = false
+}
+
+// has to be closed when the application stops
 fun createServiceHttpClient(): HttpClient = HttpClient(CIO) {
-    // Statuscodes prüft bodyOrThrow selbst, damit jeder Fehler als UpstreamException (502) endet.
+    // bodyOrThrow checks the status itself, so every error ends as UpstreamException (502)
     expectSuccess = false
     install(ContentNegotiation) { json(ServiceJson) }
     install(HttpTimeout) {
         connectTimeoutMillis = 2_000
         requestTimeoutMillis = 10_000
     }
-    // Reicht die X-Request-Id der laufenden Anfrage an den anderen Service weiter (siehe RequestLogging.kt).
+    // passes the X-Request-Id of the current request on to the other service
     install(CallId) { addToHeader(HttpHeaders.XRequestId) }
 }
 
 fun serviceUrl(baseUrl: String, vararg segments: String): Url =
     URLBuilder(baseUrl.trimEnd('/')).appendPathSegments(*segments).build()
 
-/**
- * Führt den Aufruf an einen anderen Service aus. Netzwerkfehler (Verbindung abgelehnt, Timeout) → [UpstreamException],
- * damit daraus 502 wird und nicht 500. Timeouts von HttpTimeout sind ebenfalls IOExceptions.
- * Hostname nicht auflösbar ist dagegen KEINE IOException (UnresolvedAddressException), deshalb extra.
- */
+// Network errors become UpstreamException, so the answer is 502 and not 500. HttpTimeout errors are IOExceptions too.
+// An unknown hostname is NOT an IOException (UnresolvedAddressException), that's why it's caught separately.
 suspend inline fun <T> callUpstream(what: String, block: () -> T): T = try {
     block()
 } catch (e: IOException) {
@@ -49,7 +53,6 @@ suspend inline fun <T> callUpstream(what: String, block: () -> T): T = try {
     throw UpstreamException("$what unreachable: hostname cannot be resolved (check the service URL)", e)
 }
 
-/** Liest den Body als [T]. Fehlerstatus oder unlesbarer Body → [UpstreamException]. */
 suspend inline fun <reified T> HttpResponse.bodyOrThrow(what: String): T {
     if (!status.isSuccess()) throw UpstreamException("$what answered ${status.value}")
     return try {

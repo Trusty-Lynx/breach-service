@@ -1,6 +1,6 @@
-package de.trustylynx.domain
+package de.trustylynx.models
 
-/** Ergebnis von LeakCheck: nur Quellen und Datenkategorien, nie die geleakten Daten selbst. */
+// only sources and data categories from LeakCheck, never the leaked data itself
 data class AccountBreaches(
     val found: Int,
     val fields: List<String>,
@@ -11,7 +11,7 @@ data class AccountBreaches(
     }
 }
 
-/** [date] ist `YYYY-MM` oder null, wenn LeakCheck das Datum nicht kennt. */
+// date is YYYY-MM, null if LeakCheck doesn't know it
 data class BreachSource(
     val name: String,
     val date: String?,

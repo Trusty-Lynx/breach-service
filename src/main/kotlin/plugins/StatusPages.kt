@@ -1,5 +1,9 @@
-package de.trustylynx.common
+package de.trustylynx.plugins
 
+import de.trustylynx.models.ApiException
+import de.trustylynx.models.ErrorResponse
+import de.trustylynx.models.TooManyRequests
+import de.trustylynx.models.UpstreamException
 import io.ktor.http.HttpHeaders
 import io.ktor.http.HttpStatusCode
 import io.ktor.server.application.Application
@@ -21,7 +25,7 @@ fun Application.configureStatusPages() {
             }
             call.respond(cause.status, ErrorResponse(cause.code, cause.reason))
         }
-        // Kaputtes oder unvollständiges JSON bei call.receive()
+        // broken or incomplete JSON in call.receive()
         exception<BadRequestException> { call, _ ->
             call.respond(HttpStatusCode.BadRequest, ErrorResponse("bad_request", "malformed request body"))
         }
@@ -30,7 +34,7 @@ fun Application.configureStatusPages() {
             call.respond(HttpStatusCode.BadGateway, ErrorResponse("upstream_error"))
         }
         exception<Throwable> { call, cause ->
-            // Ktor-eigene Fehler (404, 415, 413, …) behalten ihren Status.
+            // Ktor's own errors (404, 415, 413, ...) keep their status
             val status = defaultExceptionStatusCode(cause)
             if (status != null) {
                 call.respond(status, ErrorResponse(status.description.lowercase().replace(' ', '_')))

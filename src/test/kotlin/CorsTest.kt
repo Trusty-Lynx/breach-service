@@ -1,9 +1,9 @@
 package de.trustylynx
 
-import de.trustylynx.common.CorsConfig
-import de.trustylynx.domain.BreachService
-import de.trustylynx.jobs.CheckJobQueue
+import de.trustylynx.plugins.CorsConfig
 import de.trustylynx.security.LoginTokenVerifier
+import de.trustylynx.services.BreachService
+import de.trustylynx.services.CheckJobQueue
 import io.ktor.client.request.header
 import io.ktor.client.request.options
 import io.ktor.client.request.post
@@ -22,7 +22,7 @@ import kotlin.test.assertTrue
 private const val LIVE_SERVER = "http://127.0.0.1:5500"
 private const val APP_ORIGIN = "https://app.nexvent.de"
 
-/** Nach dem CorsTest im vault-service. POST /breach/account ohne Login-Token gibt 401, das reicht für CORS. */
+// like the CorsTest in the vault-service. POST /breach/account without login token gives 401, that's enough for CORS
 class CorsTest {
 
     @Test
