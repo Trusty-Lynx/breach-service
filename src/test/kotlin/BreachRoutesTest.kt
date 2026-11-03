@@ -269,6 +269,29 @@ class BreachRoutesTest {
     }
 
     @Test
+    fun `Fehlschlaege landen nicht im Cache, die naechste Abfrage fragt LeakCheck erneut`() {
+        var down = true
+        leakCheck = FakeLeakCheck {
+            if (down) throw UpstreamException("leakcheck public unreachable: ConnectException")
+            AccountBreaches(1, listOf("password"), listOf(BreachSource("Twitter.com", "2015-11")))
+        }
+        breaches = BreachService(leakCheck)
+        // gives up after the first failure, so the job is failed right away
+        queueSettings = queueSettings.copy(giveUpAfterMillis = 0)
+        breachTest {
+            assertEquals("failed", awaitJob(postAccount(body("username", "johndoe"))).status())
+
+            down = false
+            val again = postAccount(body("username", "johndoe")).json()
+
+            // not answered from the cache (that would be done with attempts 0 right away)
+            assertEquals("queued", again.status())
+            assertEquals(1, checkAccount(body("username", "johndoe")).getValue("found").jsonPrimitive.int)
+            assertTrue(leakCheck.lookups.size >= 2)
+        }
+    }
+
+    @Test
     fun `LeakCheck kurz weg - der Worker versucht es spaeter erneut`() {
         var calls = 0
         leakCheck = FakeLeakCheck {
