@@ -4,6 +4,7 @@ import de.trustylynx.clients.VerifiedSession
 import de.trustylynx.models.AccountBreaches
 import de.trustylynx.models.BreachSource
 import de.trustylynx.models.NO_DEVICE_ID
+import de.trustylynx.models.QueryRejected
 import de.trustylynx.models.TooManyRequests
 import de.trustylynx.models.UpstreamException
 import de.trustylynx.routes.DEVICE_ID_HEADER
@@ -210,6 +211,9 @@ class BreachRoutesTest {
             body("username", "ab"),
             body("username", "a".repeat(255)),
             body("username", "max@example.com"),
+            body("username", "max mustermann"),
+            body("username", "jörg"),
+            body("username", "max+1"),
             body("email", "max@example.com"),
             """{"type":"username"}""",
         )
@@ -315,6 +319,27 @@ class BreachRoutesTest {
             assertEquals("failed", job.status())
             assertEquals("upstream_unavailable", job.getValue("error").jsonPrimitive.content)
             assertNull(job["result"])
+        }
+    }
+
+    @Test
+    fun `von LeakCheck abgelehnte Abfrage ist sofort failed und blockiert die Queue nicht`() {
+        leakCheck = FakeLeakCheck { check ->
+            if (check == "johndoe") throw QueryRejected("leakcheck public: Your query contains invalid characters")
+            AccountBreaches.NONE
+        }
+        breaches = BreachService(leakCheck)
+        // with retries this long the second job would wait for minutes if the first one were retried
+        queueSettings = queueSettings.copy(retryBaseMillis = 60_000, retryMaxMillis = 60_000, giveUpAfterMillis = 120_000)
+        breachTest {
+            val rejected = postAccount(body("username", "johndoe"))
+            val next = postAccount(body("username", "janedoe"))
+
+            val job = awaitJob(rejected)
+            assertEquals("failed", job.status())
+            assertEquals(1, job.getValue("attempts").jsonPrimitive.int)
+            assertEquals("done", awaitJob(next).status())
+            assertEquals(listOf("johndoe", "janedoe"), leakCheck.lookups)
         }
     }
 

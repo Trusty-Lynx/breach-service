@@ -66,5 +66,6 @@ Ein Push auf den Branch `deploy` startet `.github/workflows/deploy.yml`. Die Act
 - `X-Device-Id` ist vorübergehend optional (Platzhalter `no-device`), bis alle Clients sie mitschicken.
 - Ist `CORS_ALLOWED_ORIGINS` nicht gesetzt, darf vorübergehend jede Origin aufrufen. Außerdem erlaubt CORS noch die alten Header `X-User-Id`, `X-Session-Id`, `X-Timestamp` und `X-Device-Sig`, weil `dashboard.js` sie noch mitschickt.
 - Ein 429 von LeakCheck wird immer mit 1 Sekunde angesetzt, ein mitgeschicktes `Retry-After` wird nicht gelesen. Wegen der Mindestwartezeit von 5 Sekunden fällt das bisher nicht auf.
-- Liefert LeakCheck eine unerwartete Fehlermeldung (zum Beispiel „Enter at least 3 characters“), wird das wie ein Ausfall behandelt und eine Stunde lang wiederholt. Die Validierung verhindert die bekannten Fälle.
+- Benutzernamen dürfen nur `A–Z a–z 0–9 . _ -` enthalten, alles andere lehnt LeakCheck ab (am 2026-11-03 geprüft). Solche Einträge aus dem Tresor bekommen `400` und werden nicht geprüft.
+- Lehnt LeakCheck eine Abfrage trotzdem ab („invalid characters“, „Could not determine search type“), ist der Job sofort `failed`. Unbekannte Fehlermeldungen gelten weiter als Ausfall und werden bis zu einer Stunde wiederholt. In der Zeit blockiert so ein Job den einzigen Worker.
 - Struktur: `security/LoginTokenVerifier` benutzt `clients/AuthServiceClient` und `DEVICE_ID_HEADER` aus `routes/`. Das weicht von der Tabelle in SERVICE-STRUKTUR.md ab und bleibt vorerst so, weil es sich nur mit einer Logikänderung auflösen ließe.

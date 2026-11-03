@@ -11,6 +11,9 @@ private val EMAIL_HASH = Regex("^[0-9a-f]{24}$")
 private const val MIN_USERNAME_LENGTH = 3
 private const val MAX_USERNAME_LENGTH = 254
 
+// LeakCheck rejects everything else (spaces, umlauts, most special characters), checked live on 2026-11-03
+private val USERNAME_CHARS = Regex("^[A-Za-z0-9._-]+$")
+
 fun validateAccountQuery(type: String, value: String): AccountQuery = when (type) {
     "email_hash" -> AccountQuery(AccountType.EMAIL_HASH, validateEmailHash(value))
     "username" -> AccountQuery(AccountType.USERNAME, validateUsername(value))
@@ -31,5 +34,8 @@ private fun validateUsername(value: String): String {
     if (username.any { it.isISOControl() }) throw BadRequest("username contains control characters")
     // LeakCheck would search this as a plain email, emails only go out hashed
     if ('@' in username) throw BadRequest("emails must be sent as email_hash")
+    if (!USERNAME_CHARS.matches(username)) {
+        throw BadRequest("username may only contain letters, digits, '.', '_' and '-'")
+    }
     return username
 }

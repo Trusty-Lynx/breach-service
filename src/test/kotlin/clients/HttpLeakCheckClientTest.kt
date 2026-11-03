@@ -2,6 +2,7 @@ package de.trustylynx.clients
 
 import de.trustylynx.models.AccountBreaches
 import de.trustylynx.models.BreachSource
+import de.trustylynx.models.QueryRejected
 import de.trustylynx.models.TooManyRequests
 import de.trustylynx.models.UpstreamException
 import io.ktor.client.HttpClient
@@ -51,6 +52,16 @@ class HttpLeakCheckClientTest {
         val client = clientRespondingWith { respondJson("""{"success": false, "error": "Enter at least 3 characters to search"}""") }
 
         assertFailsWith<UpstreamException> { client.lookup("ab") }
+    }
+
+    @Test
+    fun `Abfragen, die LeakCheck nicht durchsuchen kann, werden zu QueryRejected`() = runBlocking<Unit> {
+        // checked live on 2026-11-03, e.g. with a space or an umlaut, and with '+' or '!'
+        for (error in listOf("Your query contains invalid characters", "Could not determine search type automatically")) {
+            val client = clientRespondingWith { respondJson("""{"success": false, "error": "$error"}""") }
+
+            assertFailsWith<QueryRejected> { client.lookup("max mustermann") }
+        }
     }
 
     @Test

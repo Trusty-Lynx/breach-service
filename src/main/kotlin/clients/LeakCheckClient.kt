@@ -2,6 +2,7 @@ package de.trustylynx.clients
 
 import de.trustylynx.models.AccountBreaches
 import de.trustylynx.models.BreachSource
+import de.trustylynx.models.QueryRejected
 import de.trustylynx.models.TooManyRequests
 import de.trustylynx.models.UpstreamException
 import io.ktor.client.HttpClient
@@ -14,6 +15,12 @@ import kotlinx.serialization.Serializable
 
 private const val WHAT = "leakcheck public"
 private const val NOT_FOUND = "Not found"
+
+// answers for queries LeakCheck can't search, they come as HTTP 200 with success = false
+private val REJECTED = setOf(
+    "Your query contains invalid characters",
+    "Could not determine search type automatically",
+)
 
 interface LeakCheckClient {
     suspend fun lookup(check: String): AccountBreaches
@@ -33,6 +40,7 @@ class HttpLeakCheckClient(
         if (!body.success) {
             // no match comes as HTTP 200 with success = false
             if (body.error == NOT_FOUND) return AccountBreaches.NONE
+            if (body.error in REJECTED) throw QueryRejected("$WHAT: ${body.error}")
             throw UpstreamException("$WHAT: ${body.error ?: "success = false"}")
         }
         return AccountBreaches(

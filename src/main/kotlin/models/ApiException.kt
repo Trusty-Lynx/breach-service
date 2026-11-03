@@ -24,6 +24,9 @@ class TooManyRequests(val retryAfterSeconds: Long) :
 // another service didn't answer or sent garbage, becomes 502
 class UpstreamException(message: String, cause: Throwable? = null) : RuntimeException(message, cause)
 
+// LeakCheck is up but refuses this query, so trying again won't help
+class QueryRejected(message: String) : RuntimeException(message)
+
 @Serializable
 data class ErrorResponse(
     val error: String,

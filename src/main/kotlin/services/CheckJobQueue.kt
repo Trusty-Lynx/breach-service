@@ -5,6 +5,7 @@ import de.trustylynx.models.AccountQuery
 import de.trustylynx.models.CheckJob
 import de.trustylynx.models.CheckJobResponse
 import de.trustylynx.models.JobStatus
+import de.trustylynx.models.QueryRejected
 import de.trustylynx.models.TooManyRequests
 import de.trustylynx.models.UpstreamException
 import de.trustylynx.models.toResponse
@@ -110,6 +111,11 @@ class CheckJobQueue(
 
             val wait = try {
                 finish(job.id, JobStatus.DONE, breaches.lookup(query))
+                return
+            } catch (e: QueryRejected) {
+                // fail right away, otherwise this job would block the single worker for up to an hour
+                log.warn("LeakCheck rejected check job {}: {}", job.id, e.message)
+                finish(job.id, JobStatus.FAILED)
                 return
             } catch (e: TooManyRequests) {
                 log.warn("LeakCheck rate limit hit (job {}, attempt {})", job.id, attempt)
