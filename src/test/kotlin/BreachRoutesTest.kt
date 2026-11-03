@@ -1,12 +1,16 @@
 package de.trustylynx
 
+import de.trustylynx.clients.VerifiedSession
 import de.trustylynx.common.DEVICE_ID_HEADER
 import de.trustylynx.common.NO_DEVICE_ID
+import de.trustylynx.common.TooManyRequests
 import de.trustylynx.common.UpstreamException
 import de.trustylynx.common.VAULT_TOKEN_HEADER
 import de.trustylynx.domain.AccountBreaches
 import de.trustylynx.domain.BreachService
 import de.trustylynx.domain.BreachSource
+import de.trustylynx.jobs.CheckJobQueue
+import de.trustylynx.jobs.QueueSettings
 import de.trustylynx.security.LoginTokenVerifier
 import io.ktor.client.request.HttpRequestBuilder
 import io.ktor.client.request.get
@@ -28,18 +32,28 @@ import kotlinx.serialization.json.int
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
+import java.time.Instant
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
+import kotlin.test.fail
 
-// POST /breach/account, documentation/api/breach-service/check-account.md
+// POST /breach/account und GET /breach/account/jobs/{jobId}, documentation/api/breach-service/check-account.md
 class BreachRoutesTest {
 
     private val auth = FakeAuthService()
     private val vault = FakeVaultService()
     private var leakCheck = FakeLeakCheck()
     private var breaches = BreachService(leakCheck)
+
+    // Kleine Zeiten, damit Retries im Test nur Millisekunden dauern.
+    private var queueSettings = QueueSettings(
+        minIntervalMillis = 0,
+        retryBaseMillis = 10,
+        retryMaxMillis = 20,
+        giveUpAfterMillis = 10_000,
+    )
 
     // ---------- Fälle aus der Doku ----------
 
@@ -54,10 +68,8 @@ class BreachRoutesTest {
         }
         breaches = BreachService(leakCheck)
         breachTest {
-            val response = postAccount(body("email_hash", HASH.uppercase()))
+            val json = checkAccount(body("email_hash", HASH.uppercase()))
 
-            assertEquals(HttpStatusCode.OK, response.status)
-            val json = response.json()
             assertEquals(2, json.getValue("found").jsonPrimitive.int)
             assertEquals(listOf("password", "username"), json.getValue("fields").jsonArray.map { it.jsonPrimitive.content })
             val sources = json.getValue("sources").jsonArray.map { it.jsonObject }
@@ -70,17 +82,15 @@ class BreachRoutesTest {
 
     @Test
     fun `ohne Treffer kommt found 0`() = breachTest {
-        val response = postAccount(body("username", "zq9xk2v7"))
+        val json = checkAccount(body("username", "zq9xk2v7"))
 
-        assertEquals(HttpStatusCode.OK, response.status)
-        val json = response.json()
         assertEquals(0, json.getValue("found").jsonPrimitive.int)
         assertTrue(json.getValue("sources").jsonArray.isEmpty())
     }
 
     @Test
     fun `Benutzername wird vor der Abfrage getrimmt`() = breachTest {
-        postAccount(body("username", "  johndoe "))
+        checkAccount(body("username", "  johndoe "))
 
         assertEquals(listOf("johndoe"), leakCheck.lookups)
     }
@@ -219,56 +229,174 @@ class BreachRoutesTest {
         assertTrue(leakCheck.lookups.isEmpty())
     }
 
-    // ---------- Cache und Rate-Limit ----------
+    // ---------- Queue ----------
 
     @Test
-    fun `gleiche Abfrage kommt aus dem Cache`() {
-        breaches = BreachService(leakCheck, minIntervalMillis = 0)
-        breachTest {
-            postAccount(body("username", "johndoe"))
-            postAccount(body("username", "johndoe"))
+    fun `POST antwortet sofort mit 202, jobId und Location`() = breachTest {
+        val response = postAccount(body("username", "johndoe"))
 
-            assertEquals(1, leakCheck.lookups.size)
-        }
+        assertEquals(HttpStatusCode.Accepted, response.status)
+        val json = response.json()
+        val jobId = json.getValue("jobId").jsonPrimitive.content
+        assertEquals("$JOBS_PATH/$jobId", response.headers[HttpHeaders.Location])
+        assertTrue(json.status() in setOf("queued", "running", "done"))
+    }
+
+    @Test
+    fun `fertiger Job hat status done und attempts 1`() = breachTest {
+        val job = awaitJob(postAccount(body("username", "johndoe")))
+
+        assertEquals("done", job.status())
+        assertEquals(1, job.getValue("attempts").jsonPrimitive.int)
+        assertNull(job["error"])
+    }
+
+    @Test
+    fun `gleiche Abfrage kommt aus dem Cache und ist sofort done`() = breachTest {
+        checkAccount(body("username", "johndoe"))
+        val second = postAccount(body("username", "johndoe")).json()
+
+        assertEquals("done", second.status())
+        assertEquals(0, second.getValue("attempts").jsonPrimitive.int)
+        assertEquals(1, leakCheck.lookups.size)
     }
 
     @Test
     fun `Cache laeuft nach der TTL ab`() {
         var now = 0L
-        breaches = BreachService(leakCheck, minIntervalMillis = 0, cacheTtlMillis = 1_000, now = { now })
+        breaches = BreachService(leakCheck, cacheTtlMillis = 1_000, now = { now })
         breachTest {
-            postAccount(body("username", "johndoe"))
+            checkAccount(body("username", "johndoe"))
             now = 1_000
-            postAccount(body("username", "johndoe"))
+            checkAccount(body("username", "johndoe"))
 
             assertEquals(2, leakCheck.lookups.size)
         }
     }
 
     @Test
-    fun `zu viele Abfragen hintereinander ergeben 429 mit Retry-After`() {
-        // Uhr steht still: Das zweite Zeitfenster liegt 1,1 s in der Zukunft, warten ist nicht erlaubt.
-        breaches = BreachService(leakCheck, maxWaitMillis = 0, now = { 0L })
+    fun `LeakCheck kurz weg - der Worker versucht es spaeter erneut`() {
+        var calls = 0
+        leakCheck = FakeLeakCheck {
+            calls++
+            if (calls <= 2) throw UpstreamException("leakcheck down")
+            AccountBreaches(1, listOf("password"), listOf(BreachSource("Twitter.com", "2015-11")))
+        }
+        breaches = BreachService(leakCheck)
+        // Langsamer Retry, damit wir den Wartezustand sicher sehen
+        queueSettings = queueSettings.copy(retryBaseMillis = 300, retryMaxMillis = 300)
         breachTest {
-            assertEquals(HttpStatusCode.OK, postAccount(body("username", "johndoe")).status)
-            val response = postAccount(body("username", "janedoe"))
+            val response = postAccount(body("username", "johndoe"))
 
-            assertEquals(HttpStatusCode.TooManyRequests, response.status)
-            assertEquals("too_many_requests", response.errorCode())
-            assertEquals("2", response.headers[HttpHeaders.RetryAfter])
-            assertEquals(listOf("johndoe"), leakCheck.lookups)
+            val waiting = awaitJob(response) { it == "waiting_for_upstream" }
+            assertTrue(waiting.getValue("nextAttemptAt").jsonPrimitive.content.endsWith("Z"))
+
+            val done = awaitJob(response)
+            assertEquals("done", done.status())
+            assertEquals(3, done.getValue("attempts").jsonPrimitive.int)
+            assertEquals(1, done.getValue("result").jsonObject.getValue("found").jsonPrimitive.int)
         }
     }
 
     @Test
-    fun `LeakCheck-Ausfall ergibt 502`() {
-        breaches = BreachService(FakeLeakCheck { throw UpstreamException("leakcheck down") })
-        breachTest {
-            val response = postAccount(body("username", "johndoe"))
-
-            assertEquals(HttpStatusCode.BadGateway, response.status)
-            assertEquals("upstream_error", response.errorCode())
+    fun `429 von LeakCheck wird ebenfalls spaeter wiederholt`() {
+        var calls = 0
+        leakCheck = FakeLeakCheck {
+            calls++
+            if (calls == 1) throw TooManyRequests(retryAfterSeconds = 0)
+            AccountBreaches.NONE
         }
+        breaches = BreachService(leakCheck)
+        breachTest {
+            val done = awaitJob(postAccount(body("username", "johndoe")))
+
+            assertEquals("done", done.status())
+            assertEquals(2, done.getValue("attempts").jsonPrimitive.int)
+        }
+    }
+
+    @Test
+    fun `LeakCheck zu lange weg - Job wird aufgegeben`() {
+        breaches = BreachService(FakeLeakCheck { throw UpstreamException("leakcheck down") })
+        queueSettings = queueSettings.copy(giveUpAfterMillis = 100)
+        breachTest {
+            val job = awaitJob(postAccount(body("username", "johndoe")))
+
+            assertEquals("failed", job.status())
+            assertEquals("upstream_unavailable", job.getValue("error").jsonPrimitive.content)
+            assertNull(job["result"])
+        }
+    }
+
+    @Test
+    fun `Jobs hinter einem haengenden Job laufen danach weiter`() {
+        var calls = 0
+        leakCheck = FakeLeakCheck {
+            calls++
+            if (calls == 1) throw UpstreamException("leakcheck down")
+            AccountBreaches.NONE
+        }
+        breaches = BreachService(leakCheck)
+        breachTest {
+            val first = postAccount(body("username", "johndoe"))
+            val second = postAccount(body("username", "janedoe"))
+
+            assertEquals("done", awaitJob(first).status())
+            assertEquals("done", awaitJob(second).status())
+            assertEquals(listOf("johndoe", "johndoe", "janedoe"), leakCheck.lookups)
+        }
+    }
+
+    @Test
+    fun `volle Queue ergibt 429 mit Retry-After`() {
+        // Worker hängt am ersten Job, die Queue fasst nur einen weiteren.
+        breaches = BreachService(FakeLeakCheck { throw UpstreamException("leakcheck down") })
+        queueSettings = queueSettings.copy(
+            capacity = 1,
+            retryBaseMillis = 60_000,
+            retryMaxMillis = 60_000,
+            // Sonst gibt der Worker sofort auf, weil der nächste Versuch nach der Frist läge.
+            giveUpAfterMillis = 120_000,
+        )
+        breachTest {
+            awaitJob(postAccount(body("username", "johndoe"))) { it == "waiting_for_upstream" }
+            assertEquals(HttpStatusCode.Accepted, postAccount(body("username", "janedoe")).status)
+
+            val response = postAccount(body("username", "maxmuster"))
+
+            assertEquals(HttpStatusCode.TooManyRequests, response.status)
+            assertEquals("too_many_requests", response.errorCode())
+            assertEquals("30", response.headers[HttpHeaders.RetryAfter])
+        }
+    }
+
+    @Test
+    fun `Job eines anderen Nutzers ist 404`() = breachTest {
+        val jobId = postAccount(body("username", "johndoe")).json().getValue("jobId").jsonPrimitive.content
+        auth.sessions["login-token-u77"] = VerifiedSession("u77", "s-9", Instant.parse("2030-01-01T00:00:00Z"))
+        vault.unlocked["vault-token-u77"] = "u77"
+
+        val response = client.get("$JOBS_PATH/$jobId") {
+            header(HttpHeaders.Authorization, "Bearer login-token-u77")
+            header(VAULT_TOKEN_HEADER, "vault-token-u77")
+        }
+
+        assertEquals(HttpStatusCode.NotFound, response.status)
+        assertEquals("not_found", response.errorCode())
+    }
+
+    @Test
+    fun `unbekannte jobId ist 404`() = breachTest {
+        assertEquals(HttpStatusCode.NotFound, getJob("gibt-es-nicht").status)
+    }
+
+    @Test
+    fun `Job abfragen braucht Login- und Tresor-Token`() = breachTest {
+        val jobId = postAccount(body("username", "johndoe")).json().getValue("jobId").jsonPrimitive.content
+
+        assertEquals(HttpStatusCode.Unauthorized, client.get("$JOBS_PATH/$jobId").status)
+        val locked = client.get("$JOBS_PATH/$jobId") { header(HttpHeaders.Authorization, "Bearer $LOGIN_TOKEN") }
+        assertEquals("vault_locked", locked.errorCode())
     }
 
     // ---------- Health ----------
@@ -286,7 +414,7 @@ class BreachRoutesTest {
     private fun breachTest(block: suspend ApplicationTestBuilder.() -> Unit) = testApplication {
         // Leere Config, damit nicht application.yaml geladen wird und module() mit echten Clients startet.
         environment { config = MapApplicationConfig() }
-        application { configureApp(breaches, LoginTokenVerifier(auth), vault) }
+        application { configureApp(CheckJobQueue(breaches, queueSettings), LoginTokenVerifier(auth), vault) }
         block()
     }
 
@@ -295,6 +423,36 @@ class BreachRoutesTest {
         contentType(ContentType.Application.Json)
         setBody(body)
     }
+
+    private suspend fun ApplicationTestBuilder.getJob(jobId: String): HttpResponse = client.get("$JOBS_PATH/$jobId") {
+        callerHeaders()
+    }
+
+    /** Fragt den Job ab, bis [until] zutrifft (Default: fertig). Wie das Polling im Client. */
+    private suspend fun ApplicationTestBuilder.awaitJob(
+        created: HttpResponse,
+        until: (String) -> Boolean = { it == "done" || it == "failed" },
+    ): JsonObject {
+        assertEquals(HttpStatusCode.Accepted, created.status)
+        val jobId = created.json().getValue("jobId").jsonPrimitive.content
+        val deadline = System.currentTimeMillis() + 5_000
+        while (System.currentTimeMillis() < deadline) {
+            val job = getJob(jobId).json()
+            if (until(job.status())) return job
+            // Echte Wartezeit: Der Worker läuft mit echten Delays, nicht mit virtueller Testzeit.
+            Thread.sleep(10)
+        }
+        fail("job $jobId did not reach the expected status")
+    }
+
+    /** Anlegen, warten bis done, Ergebnis zurück. */
+    private suspend fun ApplicationTestBuilder.checkAccount(body: String): JsonObject {
+        val job = awaitJob(postAccount(body))
+        assertEquals("done", job.status())
+        return job.getValue("result").jsonObject
+    }
+
+    private fun JsonObject.status(): String = getValue("status").jsonPrimitive.content
 
     private fun HttpRequestBuilder.callerHeaders() {
         header(HttpHeaders.Authorization, "Bearer $LOGIN_TOKEN")
@@ -309,6 +467,7 @@ class BreachRoutesTest {
 
     private companion object {
         const val PATH = "/breach/account"
+        const val JOBS_PATH = "/breach/account/jobs"
 
         // SHA-256("test@example.com"), erste 24 Hex-Zeichen
         const val HASH = "973dfe463ec85785f5f95af5"
