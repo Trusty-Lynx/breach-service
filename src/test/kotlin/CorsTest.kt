@@ -2,6 +2,7 @@ package de.trustylynx
 
 import de.trustylynx.common.CorsConfig
 import de.trustylynx.domain.BreachService
+import de.trustylynx.jobs.CheckJobQueue
 import de.trustylynx.security.LoginTokenVerifier
 import io.ktor.client.request.header
 import io.ktor.client.request.options
@@ -87,7 +88,7 @@ class CorsTest {
 
     private fun corsTest(cors: CorsConfig = CorsConfig(), block: suspend ApplicationTestBuilder.() -> Unit) = testApplication {
         environment { config = MapApplicationConfig() }
-        application { configureApp(BreachService(FakeLeakCheck()), LoginTokenVerifier(FakeAuthService()), FakeVaultService(), cors) }
+        application { configureApp(CheckJobQueue(BreachService(FakeLeakCheck())), LoginTokenVerifier(FakeAuthService()), FakeVaultService(), cors) }
         block()
     }
 
