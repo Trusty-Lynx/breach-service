@@ -1,10 +1,8 @@
-package de.trustylynx
+package de.trustylynx.clients
 
-import de.trustylynx.clients.HttpVaultServiceClient
-import de.trustylynx.common.Caller
-import de.trustylynx.common.SERVICE_TOKEN_HEADER
-import de.trustylynx.common.ServiceJson
-import de.trustylynx.common.UpstreamException
+import de.trustylynx.VAULT_TOKEN
+import de.trustylynx.models.Caller
+import de.trustylynx.models.UpstreamException
 import io.ktor.client.HttpClient
 import io.ktor.client.engine.mock.MockEngine
 import io.ktor.client.engine.mock.MockRequestHandler
@@ -68,7 +66,7 @@ class HttpVaultServiceClientTest {
     }
 
     private fun clientRespondingWith(handler: MockRequestHandler): HttpVaultServiceClient {
-        // Gleiche Einstellungen wie createServiceHttpClient, nur mit MockEngine statt CIO.
+        // same settings as createServiceHttpClient, just with MockEngine instead of CIO
         val http = HttpClient(MockEngine(handler)) {
             expectSuccess = false
             install(ContentNegotiation) { json(ServiceJson) }

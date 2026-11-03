@@ -1,11 +1,9 @@
 package de.trustylynx.clients
 
-import de.trustylynx.common.TooManyRequests
-import de.trustylynx.common.UpstreamException
-import de.trustylynx.common.bodyOrThrow
-import de.trustylynx.common.serviceUrl
-import de.trustylynx.domain.AccountBreaches
-import de.trustylynx.domain.BreachSource
+import de.trustylynx.models.AccountBreaches
+import de.trustylynx.models.BreachSource
+import de.trustylynx.models.TooManyRequests
+import de.trustylynx.models.UpstreamException
 import io.ktor.client.HttpClient
 import io.ktor.client.request.get
 import io.ktor.client.request.parameter
@@ -14,16 +12,14 @@ import io.ktor.http.HttpStatusCode
 import kotlinx.coroutines.CancellationException
 import kotlinx.serialization.Serializable
 
-/** Zugriff auf LeakCheck. Als Interface, damit Tests einen Fake einsetzen können. */
+private const val WHAT = "leakcheck public"
+private const val NOT_FOUND = "Not found"
+
 interface LeakCheckClient {
-    /**
-     * Fragt die Public API von LeakCheck. Kein Treffer → [AccountBreaches.NONE].
-     * LeakCheck nicht erreichbar oder kaputte Antwort → UpstreamException, LeakCheck-Rate-Limit → TooManyRequests.
-     */
     suspend fun lookup(check: String): AccountBreaches
 }
 
-/** Public API von LeakCheck, ohne API-Key: https://docs.leakcheck.io/public-api/lookup */
+// public API without an API key: https://docs.leakcheck.io/public-api/lookup
 class HttpLeakCheckClient(
     private val http: HttpClient,
     private val baseUrl: String,
@@ -35,20 +31,20 @@ class HttpLeakCheckClient(
 
         val body = response.bodyOrThrow<LeakCheckResponse>(WHAT)
         if (!body.success) {
-            // Kein Treffer kommt als HTTP 200 mit success = false
+            // no match comes as HTTP 200 with success = false
             if (body.error == NOT_FOUND) return AccountBreaches.NONE
             throw UpstreamException("$WHAT: ${body.error ?: "success = false"}")
         }
         return AccountBreaches(
             found = body.found ?: 0,
             fields = body.fields.orEmpty(),
-            sources = body.sources.orEmpty().map { BreachSource(it.name, it.date?.takeIf(String::isNotBlank)) },
+            sources = body.sources.orEmpty().map { BreachSource(it.name, if (it.date.isNullOrBlank()) null else it.date) },
         )
     }
 
-    // Absichtlich nicht callUpstream: Das hängt e.message und die Exception als cause an, und Ktor schreibt dort die
-    // URL mit ?check=<Benutzername> hinein (z. B. bei Timeouts). StatusPages loggt die ganze Kette, der Benutzername
-    // soll aber nie ins Log. Deshalb nur der Typ der Exception, ohne cause.
+    // On purpose not callUpstream: that adds e.message and the cause, and Ktor puts the URL with
+    // ?check=<username> in there (on timeouts, for example). StatusPages logs the whole chain,
+    // but the username must never reach the log. So only the exception type, without cause.
     private suspend fun send(check: String): HttpResponse = try {
         http.get(serviceUrl(baseUrl, "api", "public")) {
             parameter("check", check)
@@ -57,11 +53,6 @@ class HttpLeakCheckClient(
         throw e
     } catch (e: Exception) {
         throw UpstreamException("$WHAT unreachable: ${e::class.simpleName}")
-    }
-
-    private companion object {
-        const val WHAT = "leakcheck public"
-        const val NOT_FOUND = "Not found"
     }
 }
 

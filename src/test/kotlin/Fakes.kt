@@ -4,15 +4,13 @@ import de.trustylynx.clients.AuthServiceClient
 import de.trustylynx.clients.LeakCheckClient
 import de.trustylynx.clients.VaultServiceClient
 import de.trustylynx.clients.VerifiedSession
-import de.trustylynx.common.Caller
-import de.trustylynx.common.UpstreamException
-import de.trustylynx.domain.AccountBreaches
+import de.trustylynx.models.AccountBreaches
+import de.trustylynx.models.Caller
+import de.trustylynx.models.UpstreamException
 import java.time.Instant
 import java.util.Collections
 
-// Gemeinsame Fakes für BreachRoutesTest und CorsTest.
-
-/** Login-Token von u42 (Session s-1), wie ihn der Auth-Service bei /login ausgeben würde. */
+// login token of u42 (session s-1)
 internal const val LOGIN_TOKEN = "login-token-u42"
 
 internal class FakeAuthService : AuthServiceClient {
@@ -29,7 +27,7 @@ internal class FakeAuthService : AuthServiceClient {
     }
 }
 
-/** Tresor-Token, mit dem u42 seinen Tresor entsperrt hat. */
+// vault token u42 unlocked the vault with
 internal const val VAULT_TOKEN = "vault-token-u42"
 
 internal class FakeVaultService : VaultServiceClient {
@@ -37,7 +35,7 @@ internal class FakeVaultService : VaultServiceClient {
     var calls = 0
     var lastCaller: Caller? = null
 
-    /** Entsperrte Tresore: Tresor-Token → userId. */
+    // unlocked vaults: vault token to userId
     val unlocked = mutableMapOf(VAULT_TOKEN to "u42")
 
     override suspend fun isUnlocked(caller: Caller, vaultToken: String): Boolean {
@@ -48,7 +46,7 @@ internal class FakeVaultService : VaultServiceClient {
     }
 }
 
-/** Ersatz für HttpLeakCheckClient. Merkt sich, was abgefragt wurde. */
+// remembers what was looked up
 internal class FakeLeakCheck(
     private val answer: (String) -> AccountBreaches = { AccountBreaches.NONE },
 ) : LeakCheckClient {

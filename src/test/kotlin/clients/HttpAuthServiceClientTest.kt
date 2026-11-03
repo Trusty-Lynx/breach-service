@@ -1,9 +1,6 @@
-package de.trustylynx
+package de.trustylynx.clients
 
-import de.trustylynx.clients.HttpAuthServiceClient
-import de.trustylynx.common.SERVICE_TOKEN_HEADER
-import de.trustylynx.common.ServiceJson
-import de.trustylynx.common.UpstreamException
+import de.trustylynx.models.UpstreamException
 import io.ktor.client.HttpClient
 import io.ktor.client.engine.mock.MockEngine
 import io.ktor.client.engine.mock.MockRequestHandler
@@ -37,7 +34,7 @@ class HttpAuthServiceClientTest {
 
             val body = Json.parseToJsonElement((request.body as TextContent).text).jsonObject
             assertEquals(LOGIN_TOKEN, body.getValue("token").jsonPrimitive.content)
-            // Der Auth-Service lehnt unbekannte Felder mit 400 ab, deshalb wirklich nur {token}.
+            // the auth-service rejects unknown fields with 400, so really only {token}
             assertEquals(setOf("token"), body.keys)
 
             respondJson(VERIFY_RESPONSE)
@@ -94,7 +91,7 @@ class HttpAuthServiceClientTest {
     }
 
     private fun clientRespondingWith(handler: MockRequestHandler): HttpAuthServiceClient {
-        // Gleiche Einstellungen wie createServiceHttpClient, nur mit MockEngine statt CIO.
+        // same settings as createServiceHttpClient, just with MockEngine instead of CIO
         val http = HttpClient(MockEngine(handler)) {
             expectSuccess = false
             install(ContentNegotiation) { json(ServiceJson) }
@@ -110,7 +107,7 @@ class HttpAuthServiceClientTest {
     private companion object {
         const val SERVICE_TOKEN = "test-service-token-gateway"
 
-        // Beispiele aus auth-service/API.md
+        // examples from auth-service/API.md
         const val LOGIN_TOKEN = "Zt7wP2kQ9xL4mN8vB1cR6yH3sJ0fD5gA2eU7iO4nK1M="
         const val VERIFY_RESPONSE = """{
             "userId": "3a0b4d3e-5c1f-4e2a-9b7d-1f2e3c4d5a6b",
