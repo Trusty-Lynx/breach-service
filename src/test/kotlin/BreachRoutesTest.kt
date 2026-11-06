@@ -3,11 +3,9 @@ package de.trustylynx
 import de.trustylynx.clients.VerifiedSession
 import de.trustylynx.models.AccountBreaches
 import de.trustylynx.models.BreachSource
-import de.trustylynx.models.NO_DEVICE_ID
 import de.trustylynx.models.QueryRejected
 import de.trustylynx.models.TooManyRequests
 import de.trustylynx.models.UpstreamException
-import de.trustylynx.routes.DEVICE_ID_HEADER
 import de.trustylynx.routes.VAULT_TOKEN_HEADER
 import de.trustylynx.security.LoginTokenVerifier
 import de.trustylynx.services.BreachService
@@ -174,25 +172,12 @@ class BreachRoutesTest {
     }
 
     @Test
-    fun `Vault bekommt userId und sessionId vom Auth-Service und die deviceId der Anfrage`() = breachTest {
+    fun `Vault bekommt userId und sessionId vom Auth-Service`() = breachTest {
         postAccount(body("username", "johndoe"))
 
         val caller = vault.lastCaller!!
         assertEquals("u42", caller.userId)
         assertEquals("s-1", caller.sessionId)
-        assertEquals("dev-mac-01", caller.deviceId)
-    }
-
-    @Test
-    fun `ohne X-Device-Id fragt der Vault mit dem Platzhalter wie beim Entsperren`() = breachTest {
-        client.post(PATH) {
-            header(HttpHeaders.Authorization, "Bearer $LOGIN_TOKEN")
-            header(VAULT_TOKEN_HEADER, VAULT_TOKEN)
-            contentType(ContentType.Application.Json)
-            setBody(body("username", "johndoe"))
-        }
-
-        assertEquals(NO_DEVICE_ID, vault.lastCaller!!.deviceId)
     }
 
     @Test
@@ -490,7 +475,6 @@ class BreachRoutesTest {
     private fun HttpRequestBuilder.callerHeaders() {
         header(HttpHeaders.Authorization, "Bearer $LOGIN_TOKEN")
         header(VAULT_TOKEN_HEADER, VAULT_TOKEN)
-        header(DEVICE_ID_HEADER, "dev-mac-01")
     }
 
     private suspend fun HttpResponse.json(): JsonObject = Json.parseToJsonElement(bodyAsText()).jsonObject

@@ -30,7 +30,7 @@ class HttpVaultServiceClient(
             http.post(serviceUrl(baseUrl, "internal", "vault", "unlocked")) {
                 header(SERVICE_TOKEN_HEADER, serviceToken)
                 contentType(ContentType.Application.Json)
-                setBody(VerifyUnlockedRequest(caller.userId, caller.sessionId, caller.deviceId, vaultToken))
+                setBody(VerifyUnlockedRequest(caller.userId, caller.sessionId, vaultToken))
             }
         }
         return when (response.status) {
@@ -46,7 +46,6 @@ class HttpVaultServiceClient(
 private data class VerifyUnlockedRequest(
     val userId: String,
     val sessionId: String,
-    val deviceId: String,
     val vaultToken: String,
 ) {
     // without the vault token, so it never ends up in a log

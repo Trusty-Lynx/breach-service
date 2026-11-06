@@ -32,10 +32,9 @@ class HttpVaultServiceClientTest {
             assertEquals(SERVICE_TOKEN, request.headers[SERVICE_TOKEN_HEADER])
 
             val body = Json.parseToJsonElement((request.body as TextContent).text).jsonObject
-            assertEquals(setOf("userId", "sessionId", "deviceId", "vaultToken"), body.keys)
+            assertEquals(setOf("userId", "sessionId", "vaultToken"), body.keys)
             assertEquals("u42", body.getValue("userId").jsonPrimitive.content)
             assertEquals("s-1", body.getValue("sessionId").jsonPrimitive.content)
-            assertEquals("dev-mac-01", body.getValue("deviceId").jsonPrimitive.content)
             assertEquals(VAULT_TOKEN, body.getValue("vaultToken").jsonPrimitive.content)
 
             respond("", HttpStatusCode.NoContent)
@@ -76,6 +75,6 @@ class HttpVaultServiceClientTest {
 
     private companion object {
         const val SERVICE_TOKEN = "test-service-token-breach"
-        val CALLER = Caller(userId = "u42", deviceId = "dev-mac-01", sessionId = "s-1")
+        val CALLER = Caller(userId = "u42", sessionId = "s-1")
     }
 }
