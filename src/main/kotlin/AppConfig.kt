@@ -34,7 +34,6 @@ private fun corsFromEnv(): CorsConfig {
     return CorsConfig(
         allowedOrigins = parseAllowedOrigins(origins),
         allowNullOrigin = parseFlag("CORS_ALLOW_NULL_ORIGIN", env("CORS_ALLOW_NULL_ORIGIN", "false")),
-        allowAnyOrigin = origins.isBlank(),
     )
 }
 

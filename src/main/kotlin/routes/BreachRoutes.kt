@@ -18,11 +18,10 @@ import io.ktor.server.routing.Route
 import io.ktor.server.routing.get
 import io.ktor.server.routing.post
 
-// who is asking always comes from the login token, these headers only say which device and vault token is meant
-const val DEVICE_ID_HEADER = "X-Device-Id"
+// who is asking always comes from the login token, this header only says which vault token is meant
 const val VAULT_TOKEN_HEADER = "X-Vault-Token"
 
-// TODO: implement GET /breach/range/{prefix} (HIBP, US-23)
+// GET /breach/range/{prefix} (password leak check via HIBP) is deliberately not implemented, US-23 is Won't
 fun Route.breachRoutes(jobs: CheckJobQueue, loginTokens: LoginTokenVerifier, vault: VaultServiceClient) {
     // POST instead of GET, so the username doesn't end up in the path and in access logs.
     // Answers 202 right away, the client polls the result from /breach/account/jobs/{jobId}.

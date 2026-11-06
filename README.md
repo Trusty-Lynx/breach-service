@@ -9,10 +9,8 @@ Kotlin 2.4 · Ktor 3.6 · Java 21
 | Methode | Pfad | Zweck | Wer darf das aufrufen? |
 |---|---|---|---|
 | `GET` | `/health` | Läuft der Service? | alle, ohne Token |
-| `POST` | `/breach/account` | Leak-Check für `email_hash` oder `username` anlegen, antwortet sofort mit `202`, `jobId` und `Location` | angemeldete Nutzer mit entsperrtem Tresor (`Authorization: Bearer`, `X-Vault-Token`, optional `X-Device-Id`) |
+| `POST` | `/breach/account` | Leak-Check für `email_hash` oder `username` anlegen, antwortet sofort mit `202`, `jobId` und `Location` | angemeldete Nutzer mit entsperrtem Tresor (`Authorization: Bearer`, `X-Vault-Token`) |
 | `GET` | `/breach/account/jobs/{jobId}` | Status und Ergebnis eines Leak-Checks abfragen (Polling) | nur der Nutzer, der den Job angelegt hat, mit entsperrtem Tresor |
-
-Details zu Requests und Antworten: `documentation/api/breach-service/check-account.md`.
 
 Ablauf: Der Login-Token wird bei jeder Anfrage beim auth-service geprüft (`POST /internal/sessions/verify`), danach der Tresor-Token beim vault-service (`POST /internal/vault/unlocked`). Erst dann landet die Abfrage in einer Queue. Genau ein Worker fragt LeakCheck, damit das Limit von einer Anfrage pro Sekunde für alle Nutzer zusammen eingehalten wird. Ist LeakCheck nicht erreichbar, wartet der Job mit Backoff und gibt nach einer Stunde auf. Ergebnisse werden 12 Stunden im RAM gecacht, Benutzernamen dabei nur als Hash.
 
@@ -61,11 +59,9 @@ Ein Push auf den Branch `deploy` startet `.github/workflows/deploy.yml`. Die Act
 
 ## Offen
 
-- `GET /breach/range/{prefix}` (HIBP, US-23) fehlt noch.
+- `GET /breach/range/{prefix}` (Passwort-Leak-Check über HIBP, US-23) ist bewusst nicht umgesetzt, US-23 ist Won't.
 - Jobs und Cache liegen nur im RAM. Nach einem Neustart sind offene Jobs weg, und der Client muss sie neu anlegen.
-- `X-Device-Id` ist vorübergehend optional (Platzhalter `no-device`), bis alle Clients sie mitschicken.
-- Ist `CORS_ALLOWED_ORIGINS` nicht gesetzt, darf vorübergehend jede Origin aufrufen. Außerdem erlaubt CORS noch die alten Header `X-User-Id`, `X-Session-Id`, `X-Timestamp` und `X-Device-Sig`, weil `dashboard.js` sie noch mitschickt.
 - Ein 429 von LeakCheck wird immer mit 1 Sekunde angesetzt, ein mitgeschicktes `Retry-After` wird nicht gelesen. Wegen der Mindestwartezeit von 5 Sekunden fällt das bisher nicht auf.
 - Benutzernamen dürfen nur `A–Z a–z 0–9 . _ -` enthalten, alles andere lehnt LeakCheck ab (am 2026-11-03 geprüft). Solche Einträge aus dem Tresor bekommen `400` und werden nicht geprüft.
 - Lehnt LeakCheck eine Abfrage trotzdem ab („invalid characters“, „Could not determine search type“), ist der Job sofort `failed`. Unbekannte Fehlermeldungen gelten weiter als Ausfall und werden bis zu einer Stunde wiederholt. In der Zeit blockiert so ein Job den einzigen Worker.
-- Struktur: `security/LoginTokenVerifier` benutzt `clients/AuthServiceClient` und `DEVICE_ID_HEADER` aus `routes/`. Das weicht von der Tabelle in SERVICE-STRUKTUR.md ab und bleibt vorerst so, weil es sich nur mit einer Logikänderung auflösen ließe.
+- Struktur: `security/LoginTokenVerifier` benutzt `clients/AuthServiceClient`. Das weicht von der Tabelle in SERVICE-STRUKTUR.md ab und bleibt vorerst so, weil es sich nur mit einer Logikänderung auflösen ließe.

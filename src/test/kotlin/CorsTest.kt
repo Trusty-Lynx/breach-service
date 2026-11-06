@@ -35,12 +35,12 @@ class CorsTest {
 
     @Test
     fun `Preflight von lokaler Origin erlaubt JSON und unsere Header`() = corsTest {
-        val response = preflight("http://localhost:3000", "content-type,authorization,x-device-id,x-vault-token,x-request-id")
+        val response = preflight("http://localhost:3000", "content-type,authorization,x-vault-token,x-request-id")
 
         assertTrue(response.status.value in 200..299, "status ${response.status}")
         assertEquals("http://localhost:3000", response.allowOrigin())
         val allowed = assertNotNull(response.headers[HttpHeaders.AccessControlAllowHeaders]).lowercase()
-        for (h in listOf("content-type", "authorization", "x-device-id", "x-vault-token", "x-request-id")) {
+        for (h in listOf("content-type", "authorization", "x-vault-token", "x-request-id")) {
             assertTrue(h in allowed, "$h fehlt in $allowed")
         }
     }
@@ -66,8 +66,18 @@ class CorsTest {
     }
 
     @Test
-    fun `ohne CORS_ALLOWED_ORIGINS darf vorerst jede Origin aufrufen`() = corsTest(CorsConfig(allowAnyOrigin = true)) {
-        assertEquals("*", postAccountFrom("https://website.example").allowOrigin())
+    fun `die Website darf ohne Konfiguration aufrufen`() = corsTest {
+        assertEquals("https://trustylynx.nexvent.de", postAccountFrom("https://trustylynx.nexvent.de").allowOrigin())
+    }
+
+    @Test
+    fun `Preflight mit alten Headern aus der Gateway- und Guard-Zeit wird abgelehnt`() = corsTest {
+        for (old in listOf("x-user-id", "x-session-id", "x-device-id", "x-timestamp", "x-device-sig")) {
+            val response = preflight("http://localhost:3000", "authorization,content-type,$old")
+
+            assertEquals(HttpStatusCode.Forbidden, response.status, old)
+            assertNull(response.allowOrigin(), old)
+        }
     }
 
     @Test
